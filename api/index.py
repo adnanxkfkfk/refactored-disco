@@ -1,82 +1,106 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
 import httpx
+import datetime
 
 app = FastAPI()
+FIREBASE_URL = "https://fran-eb915-default-rtdb.asia-southeast1.firebasedatabase.app"
 
-# Your Firebase Realtime Database URL
-FIREBASE_DB_URL = "https://fran-eb915-default-rtdb.asia-southeast1.firebasedatabase.app"
-
-class Auth(BaseModel):
+class AuthModel(BaseModel):
     username: str
     password: str
 
-class LocationData(Auth):
+class LocationModel(AuthModel):
     latitude: float
     longitude: float
 
+# Helper: Get user
 async def get_user(username: str):
-    url = f"{FIREBASE_DB_URL}/Users/{username}.json"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        if response.status_code == 200:
-            return response.json()
-        return None
+    try:
+        async with httpx.AsyncClient() as client:
+            url = f"{FIREBASE_URL}/Users/{username}.json"
+            res = await client.get(url)
+            if res.status_code == 200:
+                return res.json()
+            else:
+                raise HTTPException(status_code=res.status_code, detail="Failed to get user")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting user: {str(e)}")
 
-async def set_user(username: str, data: dict):
-    url = f"{FIREBASE_DB_URL}/Users/{username}.json"
-    async with httpx.AsyncClient() as client:
-        response = await client.put(url, json=data)
-        return response.status_code == 200
-
-async def update_locations(username: str, timestamp: str, location_str: str):
-    url = f"{FIREBASE_DB_URL}/Users/{username}/locations/{timestamp}.json"
-    async with httpx.AsyncClient() as client:
-        response = await client.put(url, json=location_str)
-        return response.status_code == 200
-
+# Register route
 @app.post("/register")
-async def register(auth: Auth):
-    user = await get_user(auth.username)
-    if user is not None:
-        raise HTTPException(status_code=400, detail="User already exists")
-    data = {"password": auth.password, "locations": {}}
-    success = await set_user(auth.username, data)
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to register user")
-    return {"message": "User registered"}
+async def register(data: AuthModel):
+    try:
+        existing = await get_user(data.username)
+        if existing:
+            raise HTTPException(status_code=400, detail="User already exists")
+        
+        async with httpx.AsyncClient() as client:
+            url = f"{FIREBASE_URL}/Users/{data.username}.json"
+            res = await client.put(url, json={"password": data.password})
+            if res.status_code == 200:
+                return {"message": "User registered"}
+            else:
+                raise HTTPException(status_code=500, detail="Failed to register user")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error registering user: {str(e)}")
 
+# Add location
 @app.post("/add_location")
-async def add_location(data: LocationData):
+async def add_location(data: LocationModel):
     user = await get_user(data.username)
-    if not user or user.get("password") != data.password:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    timestamp = datetime.utcnow().isoformat() + "Z"
-    location_str = f"{data.latitude},{data.longitude}"
-    success = await update_locations(data.username, timestamp, location_str)
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to add location")
-    return {"message": "Location added", "timestamp": timestamp}
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.get("password") != data.password:
+        raise HTTPException(status_code=401, detail="Invalid password")
 
+    location_data = {
+        "latitude": data.latitude,
+        "longitude": data.longitude,
+        "time": datetime.datetime.now().isoformat()
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            url = f"{FIREBASE_URL}/Users/{data.username}/locations.json"
+            res = await client.post(url, json=location_data)
+            if res.status_code == 200:
+                return {"message": "Location added"}
+            else:
+                raise HTTPException(status_code=500, detail=f"Firebase error: {res.text}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+# Get all locations for one user
 @app.post("/get_locations")
-async def get_locations(auth: Auth):
-    user = await get_user(auth.username)
-    if not user or user.get("password") != auth.password:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    url = f"{FIREBASE_DB_URL}/Users/{auth.username}/locations.json"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        if response.status_code == 200:
-            return {"locations": response.json() or {}}
-        raise HTTPException(status_code=500, detail="Failed to fetch locations")
+async def get_locations(data: AuthModel):
+    user = await get_user(data.username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.get("password") != data.password:
+        raise HTTPException(status_code=401, detail="Invalid password")
 
+    try:
+        async with httpx.AsyncClient() as client:
+            url = f"{FIREBASE_URL}/Users/{data.username}/locations.json"
+            res = await client.get(url)
+            if res.status_code == 200:
+                return {"locations": res.json()}
+            else:
+                raise HTTPException(status_code=500, detail="Failed to fetch locations")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+# Get all users and data
 @app.get("/all")
-async def get_all():
-    url = f"{FIREBASE_DB_URL}/Users.json"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        if response.status_code == 200:
-            return {"users": response.json() or {}}
-        raise HTTPException(status_code=500, detail="Failed to fetch all users")
-      
+async def all_data():
+    try:
+        async with httpx.AsyncClient() as client:
+            url = f"{FIREBASE_URL}/Users.json"
+            res = await client.get(url)
+            if res.status_code == 200:
+                return {"data": res.json()}
+            else:
+                raise HTTPException(status_code=500, detail="Failed to fetch all data")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
