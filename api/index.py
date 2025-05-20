@@ -1,11 +1,23 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 import datetime
 
 app = FastAPI()
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 FIREBASE_URL = "https://fran-eb915-default-rtdb.asia-southeast1.firebasedatabase.app"
 
+# Models
 class AuthModel(BaseModel):
     username: str
     password: str
@@ -14,7 +26,7 @@ class LocationModel(AuthModel):
     latitude: float
     longitude: float
 
-# Helper: Get user
+# Helper function: Get user data
 async def get_user(username: str):
     try:
         async with httpx.AsyncClient() as client:
@@ -22,12 +34,11 @@ async def get_user(username: str):
             res = await client.get(url)
             if res.status_code == 200:
                 return res.json()
-            else:
-                raise HTTPException(status_code=res.status_code, detail="Failed to get user")
+            raise HTTPException(status_code=res.status_code, detail="Failed to get user")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting user: {str(e)}")
 
-# Register route
+# Route: Register new user
 @app.post("/register")
 async def register(data: AuthModel):
     try:
@@ -40,12 +51,21 @@ async def register(data: AuthModel):
             res = await client.put(url, json={"password": data.password})
             if res.status_code == 200:
                 return {"message": "User registered"}
-            else:
-                raise HTTPException(status_code=500, detail="Failed to register user")
+            raise HTTPException(status_code=500, detail="Failed to register user")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error registering user: {str(e)}")
 
-# Add location
+# Route: User login
+@app.post("/login")
+async def login(data: AuthModel):
+    user = await get_user(data.username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.get("password") != data.password:
+        raise HTTPException(status_code=401, detail="Invalid password")
+    return {"message": "Login successful"}
+
+# Route: Add location for user
 @app.post("/add_location")
 async def add_location(data: LocationModel):
     user = await get_user(data.username)
@@ -66,12 +86,11 @@ async def add_location(data: LocationModel):
             res = await client.post(url, json=location_data)
             if res.status_code == 200:
                 return {"message": "Location added"}
-            else:
-                raise HTTPException(status_code=500, detail=f"Firebase error: {res.text}")
+            raise HTTPException(status_code=500, detail=f"Firebase error: {res.text}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-# Get all locations for one user
+# Route: Get locations for a user
 @app.post("/get_locations")
 async def get_locations(data: AuthModel):
     user = await get_user(data.username)
@@ -85,13 +104,12 @@ async def get_locations(data: AuthModel):
             url = f"{FIREBASE_URL}/Users/{data.username}/locations.json"
             res = await client.get(url)
             if res.status_code == 200:
-                return {"locations": res.json()}
-            else:
-                raise HTTPException(status_code=500, detail="Failed to fetch locations")
+                return {"locations": res.json() or {}}
+            raise HTTPException(status_code=500, detail="Failed to fetch locations")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-# Get all users and data
+# Route: Get all users and locations
 @app.get("/all")
 async def all_data():
     try:
@@ -99,8 +117,7 @@ async def all_data():
             url = f"{FIREBASE_URL}/Users.json"
             res = await client.get(url)
             if res.status_code == 200:
-                return {"data": res.json()}
-            else:
-                raise HTTPException(status_code=500, detail="Failed to fetch all data")
+                return {"data": res.json() or {}}
+            raise HTTPException(status_code=500, detail="Failed to fetch all data")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
